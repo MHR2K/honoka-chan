@@ -3,11 +3,11 @@
 package db
 
 import (
-	_ "modernc.org/sqlite"
+	_ "github.com/mattn/go-sqlite3"
 	"xorm.io/xorm"
 )
 
-const sqliteDriverName = "sqlite"
+const sqliteDriverName = "sqlite3"
 
 func mainSQLiteDSN(dbPath string) string {
 	return dbPath

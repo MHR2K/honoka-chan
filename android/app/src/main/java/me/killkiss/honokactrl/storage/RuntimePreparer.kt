@@ -7,7 +7,11 @@ import android.util.Log
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
+import java.nio.file.FileVisitResult
 import java.nio.file.Files
+import java.nio.file.Path
+import java.nio.file.SimpleFileVisitor
+import java.nio.file.attribute.BasicFileAttributes
 import java.security.MessageDigest
 import java.util.zip.ZipInputStream
 
@@ -36,27 +40,44 @@ class RuntimePreparer(private val context: Context) {
             File(runtimeRoot, relativePath).takeIf { it.exists() }?.let { relativePath to it.readBytes() }
         }.toMap()
 
+        // 绝不误删外部目录：先显式断开外部 archives 软链接
+        val archivesLink = File(runtimeRoot, "static/Android/archives")
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                Files.deleteIfExists(archivesLink.toPath())
+            } else {
+                archivesLink.delete()
+            }
+        } catch (_: Throwable) {
+            archivesLink.delete()
+        }
+
         if (runtimeRoot.exists()) {
-            runtimeRoot.deleteRecursively()
+            safeDeleteDirectory(runtimeRoot)
         }
         runtimeRoot.mkdirs()
+        File(runtimeRoot, "assets").mkdirs()
+        File(runtimeRoot, "static").mkdirs()
 
         context.assets.open(BUNDLE_ASSET_NAME).use { input ->
             ZipInputStream(input).use { zip ->
                 var entry = zip.nextEntry
                 while (entry != null) {
-                    val outFile = File(runtimeRoot, entry.name)
-                    if (preservedFiles.containsKey(entry.name)) {
-                        zip.closeEntry()
-                        entry = zip.nextEntry
-                        continue
-                    }
-                    if (entry.isDirectory) {
-                        outFile.mkdirs()
-                    } else {
-                        outFile.parentFile?.mkdirs()
-                        FileOutputStream(outFile).use { output ->
-                            zip.copyTo(output)
+                    val normalizedName = entry.name.replace('\\', '/').trimStart('/')
+                    if (normalizedName.isNotEmpty()) {
+                        val outFile = File(runtimeRoot, normalizedName)
+                        if (preservedFiles.containsKey(normalizedName)) {
+                            zip.closeEntry()
+                            entry = zip.nextEntry
+                            continue
+                        }
+                        if (entry.isDirectory || normalizedName.endsWith("/")) {
+                            outFile.mkdirs()
+                        } else {
+                            outFile.parentFile?.mkdirs()
+                            FileOutputStream(outFile).use { output ->
+                                zip.copyTo(output)
+                            }
                         }
                     }
                     zip.closeEntry()
@@ -78,7 +99,9 @@ class RuntimePreparer(private val context: Context) {
 
     private fun shouldRedeployBundle(runtimeRoot: File, bundleHash: String): Boolean {
         val markerFile = File(runtimeRoot, BUNDLE_MARKER_FILE)
-        if (!markerFile.exists()) {
+        val mainDb = File(runtimeRoot, "assets/main.db")
+        if (!markerFile.exists() || !mainDb.exists()) {
+            Log.i(TAG, "bundle marker or main.db missing, redeploy required")
             return true
         }
 
@@ -112,16 +135,67 @@ class RuntimePreparer(private val context: Context) {
         Log.i(TAG, "mount Android dir target=${targetDir.absolutePath}")
 
         val androidDir = File(runtimeRoot, "static/Android")
-        androidDir.parentFile?.mkdirs()
+        androidDir.mkdirs()
 
-        if (isSymlink(androidDir)) {
-            androidDir.delete()
-        } else if (androidDir.exists()) {
-            androidDir.deleteRecursively()
+        val archivesLink = File(androidDir, "archives")
+
+        // 绝对安全地移除软链接，绝不调用 deleteRecursively，绝不伤及外部存储中的数据文件
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                Files.deleteIfExists(archivesLink.toPath())
+            } else {
+                archivesLink.delete()
+            }
+        } catch (e: Throwable) {
+            archivesLink.delete()
         }
 
-        Os.symlink(targetDir.absolutePath, androidDir.absolutePath)
-        Log.i(TAG, "symlink created: ${androidDir.absolutePath} -> ${targetDir.absolutePath}")
+        // 智能兼容多种存放形式：
+        val resolvedArchivesDir = when {
+            File(targetDir, "archives").isDirectory -> File(targetDir, "archives")
+            File(targetDir, "list_CN_Android").isDirectory -> File(targetDir, "list_CN_Android")
+            else -> targetDir
+        }
+
+        try {
+            Os.symlink(resolvedArchivesDir.absolutePath, archivesLink.absolutePath)
+            Log.i(TAG, "symlink created: ${archivesLink.absolutePath} -> ${resolvedArchivesDir.absolutePath}")
+        } catch (e: Throwable) {
+            Log.e(TAG, "failed to create symlink: ${archivesLink.absolutePath} -> ${resolvedArchivesDir.absolutePath}", e)
+        }
+    }
+
+    private fun safeDeleteDirectory(dir: File) {
+        if (!dir.exists()) return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            try {
+                Files.walkFileTree(dir.toPath(), object : SimpleFileVisitor<Path>() {
+                    override fun visitFile(file: Path, attrs: BasicFileAttributes): FileVisitResult {
+                        Files.deleteIfExists(file)
+                        return FileVisitResult.CONTINUE
+                    }
+
+                    override fun postVisitDirectory(d: Path, exc: IOException?): FileVisitResult {
+                        Files.deleteIfExists(d)
+                        return FileVisitResult.CONTINUE
+                    }
+                })
+                return
+            } catch (e: Throwable) {
+                Log.w(TAG, "walkFileTree delete failed, fallback", e)
+            }
+        }
+        // 降级清理：遇软链接只单删链接本身，不递归其目标
+        dir.listFiles()?.forEach { file ->
+            if (isSymlink(file)) {
+                file.delete()
+            } else if (file.isDirectory) {
+                safeDeleteDirectory(file)
+            } else {
+                file.delete()
+            }
+        }
+        dir.delete()
     }
 
     private fun isSymlink(file: File): Boolean {

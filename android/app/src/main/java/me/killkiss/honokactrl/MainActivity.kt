@@ -27,6 +27,12 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import me.killkiss.honokactrl.ui.GmWebScreen
 import me.killkiss.honokactrl.ui.MainScreen
 import me.killkiss.honokactrl.ui.MainViewModel
 import me.killkiss.honokactrl.theme.HonokaControlTheme
@@ -67,14 +73,31 @@ class MainActivity : ComponentActivity() {
         setContent {
             HonokaControlTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    MainScreen(
-                        viewModel = viewModel,
-                        onToggleServer = { handleToggleServer() },
-                        onOpenLocalUrl = { openLocalUrl() },
-                        onPickDataDirectory = { openDataDirectoryPicker() },
-                        onExportBackup = { openExportBackup() },
-                        onImportBackup = { openImportBackup() },
-                    )
+                    var showGmConsole by remember { mutableStateOf(false) }
+                    val uiState by viewModel.uiState.collectAsState()
+                    val adminUrl = if (uiState.status.localUrl.isNotBlank()) {
+                        "${uiState.status.localUrl}/admin/index"
+                    } else {
+                        "http://127.0.0.1:8080/admin/index"
+                    }
+
+                    if (showGmConsole) {
+                        GmWebScreen(
+                            url = adminUrl,
+                            onClose = { showGmConsole = false },
+                            onOpenExternal = { openLocalUrl(adminUrl) },
+                        )
+                    } else {
+                        MainScreen(
+                            viewModel = viewModel,
+                            onToggleServer = { handleToggleServer() },
+                            onOpenGmConsole = { showGmConsole = true },
+                            onLaunchGame = { launchGame() },
+                            onPickDataDirectory = { openDataDirectoryPicker() },
+                            onExportBackup = { openExportBackup() },
+                            onImportBackup = { openImportBackup() },
+                        )
+                    }
                 }
             }
         }
@@ -150,19 +173,37 @@ class MainActivity : ComponentActivity() {
         return powerManager?.isIgnoringBatteryOptimizations(packageName) == true
     }
 
-    private fun openLocalUrl() {
-        val localUrl = viewModel.uiState.value.status.localUrl
-        if (localUrl.isBlank()) {
-            viewModel.showMessage("当前没有可打开的本地地址")
-            return
+    private fun openLocalUrl(targetUrl: String? = null) {
+        val url = if (!targetUrl.isNullOrBlank()) {
+            targetUrl
+        } else {
+            val base = viewModel.uiState.value.status.localUrl
+            if (base.isNotBlank()) "$base/admin/index" else "http://127.0.0.1:8080/admin/index"
         }
 
-        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(localUrl))
+        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
         try {
             startActivity(intent)
         } catch (_: ActivityNotFoundException) {
-            viewModel.showMessage("没有可用于打开本地地址的浏览器")
+            viewModel.showMessage("没有可用于打开网页的浏览器")
         }
+    }
+
+    private fun launchGame() {
+        val candidates = listOf("klb.android.lovelivecn", "klb.android.lovelive")
+        for (pkg in candidates) {
+            val launchIntent = packageManager.getLaunchIntentForPackage(pkg)
+            if (launchIntent != null) {
+                try {
+                    startActivity(launchIntent)
+                    return
+                } catch (e: Exception) {
+                    viewModel.showMessage("启动游戏失败: ${e.message}")
+                    return
+                }
+            }
+        }
+        viewModel.showMessage("未检测到游戏安装包 (klb.android.lovelivecn)，请确保已在手机上安装 LoveLive_9.7.1_patched.apk！")
     }
 
     private fun openExportBackup() {

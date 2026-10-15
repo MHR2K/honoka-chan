@@ -111,6 +111,12 @@ func SifRouter(r *gin.Engine) {
 	r.GET("/", func(ctx *gin.Context) {
 		ctx.Redirect(http.StatusFound, "/admin/index")
 	})
+	r.GET("/admin", func(ctx *gin.Context) {
+		ctx.Redirect(http.StatusFound, "/admin/index")
+	})
+	r.GET("/admin/", func(ctx *gin.Context) {
+		ctx.Redirect(http.StatusFound, "/admin/index")
+	})
 
 	notFoundHandler := func(ctx *gin.Context) {
 		ss := session.Attach(ctx)

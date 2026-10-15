@@ -353,49 +353,82 @@ func LoadUnitData() (err error) {
 	CheckErr(userEng.DropTable(new(usermodel.UserUnitData)))
 	CheckErr(userEng.CreateTable(new(usermodel.UserUnitData)))
 
+	// 1. 预加载 level_up_pattern 到内存
+	type levelUpRow struct {
+		UnitLevelUpPatternId int `xorm:"unit_level_up_pattern_id"`
+		UnitLevel            int `xorm:"unit_level"`
+		NextExp              int `xorm:"next_exp"`
+	}
+	var patternRows []levelUpRow
+	err = db.MainEng.Table("unit_level_up_pattern_m").OrderBy("unit_level_up_pattern_id ASC, unit_level ASC").Find(&patternRows)
+	CheckErr(err)
+
+	type patternInfo struct {
+		maxLevel int
+		nextExp  int
+		sumExp   int
+	}
+	patternMap := make(map[int]patternInfo, 100)
+	for _, row := range patternRows {
+		cur := patternMap[row.UnitLevelUpPatternId]
+		if row.UnitLevel > cur.maxLevel {
+			cur.sumExp = cur.nextExp
+			cur.maxLevel = row.UnitLevel
+			cur.nextExp = row.NextExp
+			patternMap[row.UnitLevelUpPatternId] = cur
+		}
+	}
+
+	// 2. 预加载 limit pattern (常量)
+	var limitSumExp int
+	_, err = db.MainEng.Table("unit_level_limit_pattern_m").
+		Where("unit_level_limit_id = 1 AND unit_level = 349").
+		Cols("next_exp").Get(&limitSumExp)
+	CheckErr(err)
+
+	// 3. 预加载签名卡列表到内存集合
+	var signUnitIDs []int
+	err = db.MainEng.Table("unit_sign_asset_m").Cols("unit_id").Find(&signUnitIDs)
+	CheckErr(err)
+	signedMap := make(map[int]bool, len(signUnitIDs))
+	for _, id := range signUnitIDs {
+		signedMap[id] = true
+	}
+
+	// 4. 一次性获取当前存在的 user_id (启动时通常为空)
+	var userID []int
+	err = userEng.Table(new(usermodel.Users)).Cols("user_id").Find(&userID)
+	CheckErr(err)
+
+	// 5. 获取所有卡片数据
 	var unitData []unitmodel.UnitM
 	err = db.MainEng.Table(new(unitmodel.UnitM)).OrderBy("unit_id ASC").Find(&unitData)
 	CheckErr(err)
 
+	commonList := make([]unitmodel.CommonUnitData, 0, len(unitData))
+	userUnitList := make([]usermodel.UserUnitData, 0, len(unitData)*len(userID))
+
 	checked := false
+	nowTs := time.Now().Unix()
+
 	for _, u := range unitData {
-		// 判断卡片最大等级
-		var unitMaxLevel, nextExp, sumExp int
-		_, err = db.MainEng.Table("unit_level_up_pattern_m").
-			Where("unit_level_up_pattern_id = ?", u.UnitLevelUpPatternId).
-			Select("MAX(unit_level),next_exp").Get(&unitMaxLevel, &nextExp)
-		CheckErr(err)
+		pInfo := patternMap[u.UnitLevelUpPatternId]
+		unitMaxLevel := pInfo.maxLevel
+		nextExp := pInfo.nextExp
+		sumExp := pInfo.sumExp
 
-		// 计算突破前的经验总和
-		_, err = db.MainEng.Table("unit_level_up_pattern_m").
-			Where("unit_level_up_pattern_id = ?", u.UnitLevelUpPatternId).
-			Where("unit_level = ?", unitMaxLevel-1).Cols("next_exp").Get(&sumExp)
-		CheckErr(err)
+		smileMax := u.SmileMax
+		pureMax := u.PureMax
+		coolMax := u.CoolMax
 
-		// 计算突破前的属性
-		var smileMax, pureMax, coolMax int
-		smileMax = u.SmileMax
-		pureMax = u.PureMax
-		coolMax = u.CoolMax
-
-		// 如果 nexpExp 不为零，则说明卡片等级没有达到上限
 		if nextExp != 0 {
-			// 计算突破后的经验总和
-			_, err = db.MainEng.Table("unit_level_limit_pattern_m").
-				Where("unit_level_limit_id = 1 AND unit_level = 349").
-				Cols("next_exp").Get(&sumExp)
-			CheckErr(err)
-
-			// 突破后最大等级
+			sumExp = limitSumExp
 			unitMaxLevel = 350
-
-			// 计算突破后的属性
 			smileMax += 6000
 			pureMax += 6000
 			coolMax += 6000
 		}
 
-		// 计算绊值、技能等级、技能经验
 		var maxLove, skillLevel, skillExp, removableSkillCapacity, levelLimitID int
 		switch u.Rarity {
 		case 1:
@@ -430,7 +463,6 @@ func LoadUnitData() (err error) {
 			levelLimitID = 0
 		}
 
-		// 针对技能卡等应援卡片
 		if smileMax == 1 {
 			maxLove = 0
 			skillExp = 0
@@ -438,20 +470,18 @@ func LoadUnitData() (err error) {
 			removableSkillCapacity = 0
 		}
 
-		// 检查是否签名卡
-		var isSigned bool
-		exist, err := db.MainEng.Table("unit_sign_asset_m").Where("unit_id = ?", u.UnitId).Exist()
-		CheckErr(err)
-		if exist {
-			isSigned = true
+		isSigned := signedMap[u.UnitId]
+
+		nameStr := ""
+		if u.NameEn != nil {
+			nameStr = *u.NameEn
 		}
 
-		// 生成公共卡片
 		unitCommon := unitmodel.CommonUnitData{
 			UnitNumber:                  u.UnitNumber,
 			UnitID:                      u.UnitId,
 			UnitTypeID:                  u.UnitTypeId,
-			Name:                        *u.NameEn,
+			Name:                        nameStr,
 			Eponym:                      u.EponymEn,
 			Rarity:                      u.Rarity,
 			Attribute:                   u.AttributeId,
@@ -476,15 +506,9 @@ func LoadUnitData() (err error) {
 			IsSigned:                    isSigned,
 			IsSkillLevelMax:             true,
 			IsRemovableSkillCapacityMax: true,
-			InsertDate:                  time.Now().Unix(),
+			InsertDate:                  nowTs,
 		}
-
-		_, err = userEng.Insert(&unitCommon)
-		CheckErr(err)
-
-		var userID []int
-		err = db.UserEng.Table(new(usermodel.Users)).Cols("user_id").Find(&userID)
-		CheckErr(err)
+		commonList = append(commonList, unitCommon)
 
 		for _, id := range userID {
 			userUnit := usermodel.UserUnitData{
@@ -492,30 +516,43 @@ func LoadUnitData() (err error) {
 				FavoriteFlag: false,
 				DisplayRank:  u.RankMax,
 				UserID:       id,
-				InsertDate:   time.Now().Unix(),
+				InsertDate:   nowTs,
 			}
-
-			// 检查表里是否已经有数据
 			if !checked {
-				ct, err := userEng.Table(new(usermodel.UserUnitData)).Count()
-				CheckErr(err)
-
-				if ct == 0 {
-					userUnit.UnitOwningUserID = 38383
-				}
-
+				userUnit.UnitOwningUserID = 38383
 				checked = true
 			}
-
-			_, err = userEng.Insert(&userUnit)
-			CheckErr(err)
+			userUnitList = append(userUnitList, userUnit)
 		}
+	}
+
+	// 分批批量插入 common_unit_data
+	batchSize := 200
+	for i := 0; i < len(commonList); i += batchSize {
+		end := i + batchSize
+		if end > len(commonList) {
+			end = len(commonList)
+		}
+		batch := commonList[i:end]
+		_, err = userEng.Insert(&batch)
+		CheckErr(err)
+	}
+
+	// 分批批量插入 user_unit_data
+	for i := 0; i < len(userUnitList); i += batchSize {
+		end := i + batchSize
+		if end > len(userUnitList) {
+			end = len(userUnitList)
+		}
+		batch := userUnitList[i:end]
+		_, err = userEng.Insert(&batch)
+		CheckErr(err)
 	}
 
 	err = userEng.Commit()
 	CheckErr(err)
 
-	log.Println("同步完成！")
+	log.Println("卡片数据同步完成！")
 	return nil
 }
 

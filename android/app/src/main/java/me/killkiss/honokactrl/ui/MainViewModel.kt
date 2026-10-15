@@ -85,6 +85,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             pushMessage("请先授予全部文件访问权限")
             return
         }
+        if (uiState.value.busy || uiState.value.status.running) {
+            Log.w(TAG, "start ignored: server is already busy or running")
+            return
+        }
 
         Log.i(TAG, "start requested, dataDir=${uiState.value.dataDirPath}")
         prepareRuntime { runtimeRoot ->
@@ -96,9 +100,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 _uiState.value = _uiState.value.copy(busy = true)
                 pushMessage("正在启动服务", autoClearMillis = null)
                 refreshServerState(
-                    initialDelayMillis = 500,
-                    retryCount = 8,
-                    retryDelayMillis = 400,
+                    initialDelayMillis = 300,
+                    retryCount = 20,
+                    retryDelayMillis = 300,
                     expectedRunning = true,
                     updateMessage = true,
                 )

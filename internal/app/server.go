@@ -34,6 +34,7 @@ type Status struct {
 
 var (
 	mu         sync.Mutex
+	isStarting bool
 	httpServer *http.Server
 	listener   net.Listener
 	state      Status
@@ -50,11 +51,18 @@ func Start(workDir string) error {
 	}
 
 	mu.Lock()
-	if state.Running {
+	if state.Running || isStarting {
 		mu.Unlock()
-		return errors.New("server is already running")
+		return errors.New("server is already running or starting")
 	}
+	isStarting = true
 	mu.Unlock()
+
+	defer func() {
+		mu.Lock()
+		isStarting = false
+		mu.Unlock()
+	}()
 
 	if err := os.Chdir(absWorkDir); err != nil {
 		setLastError(err)

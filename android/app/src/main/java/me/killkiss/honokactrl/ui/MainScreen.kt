@@ -47,7 +47,8 @@ import me.killkiss.honokactrl.R
 fun MainScreen(
     viewModel: MainViewModel,
     onToggleServer: () -> Unit,
-    onOpenLocalUrl: () -> Unit,
+    onOpenGmConsole: () -> Unit,
+    onLaunchGame: () -> Unit,
     onPickDataDirectory: () -> Unit,
     onExportBackup: () -> Unit,
     onImportBackup: () -> Unit,
@@ -86,7 +87,7 @@ fun MainScreen(
                                 text = "本地地址：${state.status.localUrl}",
                                 modifier = Modifier.weight(1f),
                             )
-                            IconButton(onClick = onOpenLocalUrl, modifier = Modifier.size(36.dp)) {
+                            IconButton(onClick = onOpenGmConsole, modifier = Modifier.size(36.dp)) {
                                 Icon(
                                     Icons.Outlined.Language,
                                     contentDescription = "打开本地地址",
@@ -116,6 +117,22 @@ fun MainScreen(
                                 contentDescription = null,
                             )
                             Text(if (state.status.running) "停止服务" else "启动服务")
+                        }
+                        if (state.status.running) {
+                            Button(
+                                onClick = onLaunchGame,
+                                modifier = Modifier.widthIn(min = 132.dp),
+                            ) {
+                                Text("启动游戏")
+                            }
+                        }
+                        Button(
+                            onClick = onOpenGmConsole,
+                            enabled = state.status.running,
+                            modifier = Modifier.widthIn(min = 132.dp),
+                        ) {
+                            Icon(Icons.Outlined.Language, contentDescription = null)
+                            Text("GM 控制台")
                         }
                         OutlinedButton(
                             onClick = { viewModel.refreshStatus() },
